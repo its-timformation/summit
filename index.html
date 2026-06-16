@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+<title>Summit — Ski Fitness</title>
+<meta name="theme-color" content="#0E2A4A" />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+<script src="exercises.js"></script>
+<script src="parser.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+  :root{
+    --ink:#102a45; --ink-soft:#4d627c; --line:rgba(255,255,255,.55);
+    --accent:#ff6b45; --accent-deep:#f2502b; --teal:#1ca59b; --teal-deep:#137a73;
+    --good:#19a974;
+  }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body{ margin:0; padding:0; }
+  body{
+    font-family:'Inter',system-ui,sans-serif; color:var(--ink);
+    min-height:100vh;
+    background:
+      radial-gradient(120% 90% at 12% 8%, #fcd9c2 0%, rgba(252,217,194,0) 42%),
+      radial-gradient(120% 90% at 88% 0%, #bfe6f5 0%, rgba(191,230,245,0) 45%),
+      radial-gradient(140% 120% at 78% 100%, #cfeee9 0%, rgba(207,238,233,0) 50%),
+      radial-gradient(160% 140% at 0% 100%, #dcd9f4 0%, rgba(220,217,244,0) 55%),
+      linear-gradient(160deg,#eaf4fb 0%,#e7f1f3 55%,#eef0fb 100%);
+    background-attachment:fixed;
+  }
+  .font-display{ font-family:'Space Grotesk',sans-serif; }
+  .glass{
+    background:rgba(255,255,255,.5);
+    backdrop-filter:blur(20px) saturate(165%);
+    -webkit-backdrop-filter:blur(20px) saturate(165%);
+    border:1px solid var(--line);
+    box-shadow:0 8px 30px rgba(16,42,69,.10);
+  }
+  .glass-soft{
+    background:rgba(255,255,255,.34);
+    backdrop-filter:blur(14px) saturate(150%);
+    -webkit-backdrop-filter:blur(14px) saturate(150%);
+    border:1px solid rgba(255,255,255,.45);
+  }
+  .glass-nav{
+    background:rgba(255,255,255,.62);
+    backdrop-filter:blur(24px) saturate(170%);
+    -webkit-backdrop-filter:blur(24px) saturate(170%);
+    border-top:1px solid rgba(255,255,255,.6);
+  }
+  input,textarea,select{ font-family:inherit; color:var(--ink); }
+  input:focus,textarea:focus,select:focus,button:focus-visible{ outline:2px solid var(--accent); outline-offset:1px; }
+  .field{
+    background:rgba(255,255,255,.6); border:1px solid rgba(255,255,255,.7);
+    border-radius:14px; padding:10px 12px; width:100%; font-size:15px;
+  }
+  .no-scrollbar::-webkit-scrollbar{ display:none; }
+  .no-scrollbar{ -ms-overflow-style:none; scrollbar-width:none; }
+  @keyframes pop{ 0%{ transform:scale(.9);} 60%{ transform:scale(1.04);} 100%{ transform:scale(1);} }
+  .pop{ animation:pop .25s ease-out; }
+  @media (prefers-reduced-motion: reduce){ .pop{ animation:none; } *{ scroll-behavior:auto; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useMemo } = React;
+const LIB = window.EXERCISE_LIBRARY;
+const STORE = "fittrack-v1";
+
+/* ---------------- storage ---------------- */
+const blank = { plans: [], logs: [] };
+function load(){ try{ const r = localStorage.getItem(STORE); return r ? JSON.parse(r) : blank; }catch(e){ return blank; } }
+function persist(d){ try{ localStorage.setItem(STORE, JSON.stringify(d)); }catch(e){} }
+
+/* ---------------- ids & dates ---------------- */
+let _i=0; const uid=(p)=>`${p}_${Date.now().toString(36)}_${(_i++).toString(36)}`;
+const todayISO=()=> new Date().toISOString().slice(0,10);
+function fmtDate(iso){ if(!iso) return ""; const d=new Date(iso.length<=10? iso+"T00:00:00":iso); return d.toLocaleDateString(undefined,{day:"numeric",month:"short"}); }
+function fmtClock(sec){ sec=Math.max(0,Math.round(sec)); const m=Math.floor(sec/60), s=sec%60; return `${m}:${String(s).padStart(2,"0")}`; }
+function startOfWeek(d){ const x=new Date(d); const day=(x.getDay()+6)%7; x.setHours(0,0,0,0); x.setDate(x.getDate()-day); return x; }
+function weekKey(d){ const s=startOfWeek(d); return s.toISOString().slice(0,10); }
+
+/* ---------------- recommendation text ---------------- */
+function recLine(a){
+  const parts=[];
+  if(a.sets) parts.push(`${a.sets} sets`);
+  if(a.type==="time" && a.durationSec) parts.push(`${a.durationSec}s${a.sets?" each":""}`);
+  else if(a.reps) parts.push(`${a.reps}${a.perLeg?" / leg":" reps"}`);
+  if(a.type==="weight" && a.weight) parts.push(`${a.weight}${a.weightUnit||"kg"}`);
+  if(a.type==="distance"){ if(a.durationSec) parts.push(`${Math.round(a.durationSec/60)} min`); if(a.distance) parts.push(`${a.distance} ${a.distanceUnit||"mi"}`); }
+  return parts.join(" · ") || "—";
+}
+
+/* ---------------- icons ---------------- */
+function Ic({d,size=22,fill="none",vb="0 0 24 24"}){ return (<svg width={size} height={size} viewBox={vb} fill={fill} stroke={fill==="none"?"currentColor":"none"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{d}</svg>); }
+const IcHome=(p)=><Ic {...p} d={<><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></>}/>;
+const IcStack=(p)=><Ic {...p} d={<><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></>}/>;
+const IcChart=(p)=><Ic {...p} d={<><line x1="4" y1="20" x2="4" y2="10"/><line x1="10" y1="20" x2="10" y2="4"/><line x1="16" y1="20" x2="16" y2="13"/><line x1="22" y1="20" x2="2" y2="20"/></>}/>;
+const IcGear=(p)=><Ic {...p} d={<><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.6 1.7 1.7 0 00-1.9.4l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.6-1.1 1.7 1.7 0 00-.4-1.9l-.1-.1A2 2 0 117.5 4.6l.1.1a1.7 1.7 0 001.9.3H9.6a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V9.6a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></>}/>;
+const IcBolt=({size=30,color="#fff"})=><svg width={size} height={size} viewBox="0 0 24 24" fill={color}><path d="M13 2L4.5 13.5H11l-1 8.5L19.5 10H13l0-8z"/></svg>;
+const IcChevron=(p)=><Ic size={18} {...p} d={<polyline points="9 6 15 12 9 18"/>}/>;
+const IcBack=(p)=><Ic size={22} {...p} d={<><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></>}/>;
+const IcPlus=(p)=><Ic size={18} {...p} d={<><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>}/>;
+const IcX=(p)=><Ic size={18} {...p} d={<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>}/>;
+const IcCheck=(p)=><Ic size={18} {...p} d={<polyline points="20 6 9 17 4 12"/>}/>;
+const IcPlay=({size=15,color="#fff"})=><svg width={size} height={size} viewBox="0 0 24 24" fill={color}><polygon points="6 4 20 12 6 20"/></svg>;
+const IcStop=({size=14,color="#fff"})=><svg width={size} height={size} viewBox="0 0 24 24" fill={color}><rect x="5" y="5" width="14" height="14" rx="3"/></svg>;
+const IcTrash=(p)=><Ic size={17} {...p} d={<><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></>}/>;
+const IcEdit=(p)=><Ic size={17} {...p} d={<><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4 12.5-12.5z"/></>}/>;
+const IcFlame=({size=18,color="#ff6b45"})=><svg width={size} height={size} viewBox="0 0 24 24" fill={color}><path d="M12 2s4 4 4 8a4 4 0 01-8 0c0-1 .5-2 .5-2S6 9 6 13a6 6 0 0012 0c0-5-6-11-6-11z"/></svg>;
+
+/* ---------------- small UI ---------------- */
+function Eyebrow({children,color="var(--ink-soft)"}){ return <div className="font-display uppercase" style={{color,fontSize:11,letterSpacing:".14em",fontWeight:600}}>{children}</div>; }
+function Card({children,className="",soft=false,style={}}){ return <div className={(soft?"glass-soft":"glass")+" rounded-3xl "+className} style={style}>{children}</div>; }
+function Pill({children,bg="rgba(255,255,255,.55)",fg="var(--ink)"}){ return <span className="inline-block rounded-full px-3 py-1 mr-2 mb-2" style={{background:bg,color:fg,fontSize:12,fontWeight:600}}>{children}</span>; }
+function Btn({children,onClick,kind="solid",className="",style={}}){
+  const base="font-display rounded-full inline-flex items-center justify-center gap-2";
+  const styles = kind==="solid"
+    ? {background:"linear-gradient(135deg,var(--accent),var(--accent-deep))",color:"#fff",boxShadow:"0 8px 22px rgba(242,80,43,.35)"}
+    : kind==="teal"
+    ? {background:"linear-gradient(135deg,var(--teal),var(--teal-deep))",color:"#fff",boxShadow:"0 8px 22px rgba(19,122,115,.3)"}
+    : kind==="ghost"
+    ? {background:"rgba(255,255,255,.55)",color:"var(--ink)",border:"1px solid var(--line)"}
+    : {background:"transparent",color:"var(--ink-soft)"};
+  return <button onClick={onClick} className={base+" "+className} style={{...styles,...style}}>{children}</button>;
+}
+
+/* ---------------- stopwatch ---------------- */
+function Stopwatch({seconds,onChange,tealWhenIdle=false}){
+  const [run,setRun]=useState(false);
+  const [el,setEl]=useState(seconds||0);
+  const ref=useRef(null);
+  useEffect(()=>{ if(run){ ref.current=setInterval(()=>setEl(e=>e+1),1000);} else if(ref.current){ clearInterval(ref.current);} return ()=>ref.current&&clearInterval(ref.current); },[run]);
+  function toggle(){ if(run){ setRun(false); onChange(el);} else setRun(true); }
+  return (
+    <div className="flex items-center gap-2">
+      <input type="number" value={el} onChange={e=>{const v=+e.target.value||0; setEl(v); onChange(v);}} className="field text-center font-display" style={{width:74,fontSize:18,padding:"6px 8px"}}/>
+      <span style={{fontSize:12,color:"var(--ink-soft)"}}>sec</span>
+      <button onClick={toggle} className="rounded-full flex items-center justify-center" style={{width:38,height:38,background: run?"linear-gradient(135deg,var(--accent),var(--accent-deep))":"linear-gradient(135deg,var(--teal),var(--teal-deep))"}}>
+        {run?<IcStop/>:<IcPlay/>}
+      </button>
+    </div>
+  );
+}
+
+/* ---------------- charts (hand-rolled SVG) ---------------- */
+function BarChart({data,accent="var(--teal-deep)"}){
+  const w=320,h=120,pad=18; const max=Math.max(1,...data.map(d=>d.value));
+  const bw=(w-pad*2)/data.length;
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
+      {data.map((d,i)=>{ const bh=(d.value/max)*(h-pad*2); const x=pad+i*bw; return (
+        <g key={i}>
+          <rect x={x+bw*0.18} y={h-pad-bh} width={bw*0.64} height={Math.max(bh,d.value?3:0)} rx="4" fill={accent} opacity={d.value?0.92:0.18}/>
+          <text x={x+bw/2} y={h-5} textAnchor="middle" style={{fontSize:8,fill:"var(--ink-soft)"}}>{d.label}</text>
+        </g>
+      );})}
+    </svg>
+  );
+}
+function LineChart({points,target,color="var(--accent-deep)"}){
+  const w=320,h=130,pad=20;
+  if(points.length<2) return <div style={{fontSize:13,color:"var(--ink-soft)"}} className="py-6 text-center">Log this exercise a few times to see a trend.</div>;
+  const ys=points.map(p=>p.y).concat(target?[target]:[]); const max=Math.max(...ys),min=Math.min(...ys); const rng=(max-min)||1;
+  const X=i=>pad+(i/(points.length-1))*(w-pad*2); const Y=v=>h-pad-((v-min)/rng)*(h-pad*2);
+  const dpath=points.map((p,i)=>`${i?"L":"M"}${X(i)},${Y(p.y)}`).join(" ");
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`}>
+      {target!=null && <line x1={pad} y1={Y(target)} x2={w-pad} y2={Y(target)} stroke="var(--accent)" strokeDasharray="4 4" strokeWidth="1.4" opacity="0.6"/>}
+      <path d={dpath} fill="none" stroke={color} strokeWidth="2.6"/>
+      {points.map((p,i)=><circle key={i} cx={X(i)} cy={Y(p.y)} r="3.4" fill={color}/>)}
+      <text x={pad} y={12} style={{fontSize:9,fill:"var(--ink-soft)"}}>{max}</text>
+    </svg>
+  );
+}
+
+/* ---------------- stats helpers ---------------- */
+function bestOfEntry(entry){
+  let bw=0,br=0,bd=0,bdist=0;
+  (entry.sets||[]).forEach(s=>{ if(s.weight) bw=Math.max(bw,+s.weight); if(s.reps) br=Math.max(br,+s.reps); if(s.durationSec) bd=Math.max(bd,+s.durationSec); if(s.distance) bdist=Math.max(bdist,+s.distance); });
+  return {bw,br,bd,bdist};
+}
+function entryVolume(entry){ let v=0; (entry.sets||[]).forEach(s=>{ if(s.weight&&s.reps) v+=(+s.weight)*(+s.reps); }); return v; }
+
+/* =====================================================================
+   HOME
+===================================================================== */
+function Home({data,go,startFlow}){
+  const logs=[...data.logs].sort((a,b)=>a.date<b.date?1:-1);
+  const now=new Date();
+  const greet = now.getHours()<12?"Good morning":now.getHours()<18?"Good afternoon":"Good evening";
+  const wkStart=startOfWeek(now);
+  const thisWeek=logs.filter(l=>new Date(l.date)>=wkStart);
+  const mins=Math.round(thisWeek.reduce((s,l)=>s+(l.durationSec||0),0)/60);
+  // week streak
+  let streak=0; { let k=weekKey(now); const set=new Set(logs.map(l=>weekKey(new Date(l.date)))); let cur=new Date(wkStart);
+    while(set.has(cur.toISOString().slice(0,10))){ streak++; cur.setDate(cur.getDate()-7);} }
+  const daysToJan = Math.max(0, Math.ceil((new Date(now.getFullYear()+(now.getMonth()>=1?1:0),0,1)-now)/86400000));
+  const lastPlan = data.plans.find(p=>p.id===(logs[0]&&logs[0].planId)) || data.plans[0];
+
+  return (
+    <div className="space-y-4">
+      <div className="pt-2">
+        <Eyebrow>{greet}, Tim</Eyebrow>
+        <h1 className="font-display" style={{fontSize:30,fontWeight:700,lineHeight:1.05,marginTop:4}}>Ready to build<br/>for the mountain.</h1>
+      </div>
+
+      <Card className="p-5" style={{background:"linear-gradient(135deg,rgba(28,165,155,.92),rgba(19,122,115,.92))",border:"none",color:"#fff",boxShadow:"0 12px 30px rgba(19,122,115,.35)"}}>
+        <div className="flex items-center justify-between">
+          <div>
+            <div style={{fontSize:12,opacity:.85,fontWeight:600,letterSpacing:".1em"}} className="font-display uppercase">Countdown to January</div>
+            <div className="font-display" style={{fontSize:40,fontWeight:700,lineHeight:1}}>{daysToJan}<span style={{fontSize:16,fontWeight:600}}> days</span></div>
+          </div>
+          <div className="text-right">
+            <div className="flex items-center gap-1 justify-end"><IcFlame color="#ffd9c2"/><span className="font-display" style={{fontSize:22,fontWeight:700}}>{streak}</span></div>
+            <div style={{fontSize:11,opacity:.85}}>week{streak===1?"":"s"} on a roll</div>
+          </div>
+        </div>
+      </Card>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Card className="p-4"><Eyebrow>This week</Eyebrow><div className="font-display" style={{fontSize:28,fontWeight:700}}>{thisWeek.length}</div><div style={{fontSize:12,color:"var(--ink-soft)"}}>workout{thisWeek.length===1?"":"s"}</div></Card>
+        <Card className="p-4"><Eyebrow>Time trained</Eyebrow><div className="font-display" style={{fontSize:28,fontWeight:700}}>{mins}<span style={{fontSize:15}}> min</span></div><div style={{fontSize:12,color:"var(--ink-soft)"}}>this week</div></Card>
+      </div>
+
+      <Card className="p-5">
+        <div className="flex items-center justify-between mb-1">
+          <Eyebrow>{lastPlan?"Pick up where you left off":"Start here"}</Eyebrow>
+        </div>
+        {lastPlan ? (
+          <>
+            <div className="font-display" style={{fontSize:20,fontWeight:700}}>{lastPlan.name}</div>
+            <div style={{fontSize:13,color:"var(--ink-soft)",marginBottom:12}}>{lastPlan.phases.length} phase{lastPlan.phases.length===1?"":"s"} · {lastPlan.phases.reduce((s,p)=>s+p.routines.length,0)} routines</div>
+            <div className="flex gap-2">
+              <Btn kind="solid" className="px-5 py-3" style={{fontSize:14}} onClick={()=>startFlow(lastPlan.id)}><IcPlay/> Start workout</Btn>
+              <Btn kind="ghost" className="px-4 py-3" style={{fontSize:14}} onClick={()=>go({name:"plan",planId:lastPlan.id})}>View plan</Btn>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{fontSize:14,color:"var(--ink-soft)",marginBottom:12}}>Create your first plan — paste a workout from ChatGPT or build one by hand.</div>
+            <Btn kind="solid" className="px-5 py-3" style={{fontSize:14}} onClick={()=>go({name:"addPlan"})}><IcPlus/> New plan</Btn>
+          </>
+        )}
+      </Card>
+
+      {logs.length>0 && (
+        <Card className="p-5">
+          <Eyebrow>Recent workouts</Eyebrow>
+          <div className="mt-2 space-y-3">
+            {logs.slice(0,4).map(l=>(
+              <div key={l.id} className="flex items-center justify-between">
+                <div>
+                  <div style={{fontWeight:600,fontSize:14}}>{l.routineName}</div>
+                  <div style={{fontSize:12,color:"var(--ink-soft)"}}>{l.planName} · {Math.round((l.durationSec||0)/60)} min</div>
+                </div>
+                <div style={{fontSize:12,color:"var(--ink-soft)"}}>{fmtDate(l.date)}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   PLANS LIST
+===================================================================== */
+function Plans({data,go}){
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between pt-2">
+        <h1 className="font-display" style={{fontSize:26,fontWeight:700}}>Plans</h1>
+        <Btn kind="solid" className="px-4 py-2.5" style={{fontSize:13}} onClick={()=>go({name:"addPlan"})}><IcPlus/> New</Btn>
+      </div>
+      {data.plans.length===0 && (
+        <Card className="p-6 text-center">
+          <div style={{fontSize:15,color:"var(--ink-soft)"}}>No plans yet. Paste an AI-generated workout or build one by hand to get started.</div>
+          <Btn kind="solid" className="px-5 py-3 mt-4" style={{fontSize:14}} onClick={()=>go({name:"addPlan"})}><IcPlus/> New plan</Btn>
+        </Card>
+      )}
+      <div className="space-y-3">
+        {data.plans.map(p=>{
+          const routines=p.phases.reduce((s,ph)=>s+ph.routines.length,0);
+          const acts=p.phases.reduce((s,ph)=>s+ph.routines.reduce((t,r)=>t+r.activities.length,0),0);
+          const done=data.logs.filter(l=>l.planId===p.id).length;
+          return (
+            <button key={p.id} onClick={()=>go({name:"plan",planId:p.id})} className="block w-full text-left">
+              <Card className="p-5">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="font-display" style={{fontSize:20,fontWeight:700}}>{p.name}</div>
+                    {p.description && <div style={{fontSize:13,color:"var(--ink-soft)",marginTop:2}} className="line-clamp-2">{p.description}</div>}
+                  </div>
+                  <IcChevron color="var(--ink-soft)"/>
+                </div>
+                <div className="flex flex-wrap mt-3">
+                  <Pill bg="rgba(28,165,155,.16)" fg="var(--teal-deep)">{p.phases.length} phase{p.phases.length===1?"":"s"}</Pill>
+                  <Pill>{routines} routines</Pill>
+                  <Pill>{acts} exercises</Pill>
+                  {done>0 && <Pill bg="rgba(255,107,69,.16)" fg="var(--accent-deep)">{done} done</Pill>}
+                </div>
+              </Card>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   ADD PLAN (paste / manual)
+===================================================================== */
+function AddPlan({go,onCreate}){
+  const [mode,setMode]=useState(null);
+  const [text,setText]=useState("");
+  const [err,setErr]=useState("");
+  function doParse(){
+    if(!text.trim()){ setErr("Paste some workout text first."); return; }
+    try{ const plan=window.parsePlanFromText(text); onCreate(plan,true); }
+    catch(e){ setErr("Couldn't read that. Try cleaning up the text a little."); }
+  }
+  function doManual(){
+    const plan={ id:uid("plan"), name:"New plan", description:"", createdAt:new Date().toISOString(), startDate:todayISO(),
+      phases:[{ id:uid("ph"), name:"Main", description:"", durationWeeks:null, startDate:null, endDate:null, routines:[], targets:[] }] };
+    onCreate(plan,true);
+  }
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 pt-2">
+        <button onClick={()=>go({name:"plans"})}><IcBack/></button>
+        <h1 className="font-display" style={{fontSize:24,fontWeight:700}}>New plan</h1>
+      </div>
+
+      {!mode && (
+        <div className="space-y-3">
+          <button onClick={()=>setMode("paste")} className="block w-full text-left">
+            <Card className="p-5">
+              <Eyebrow color="var(--accent-deep)">Recommended</Eyebrow>
+              <div className="font-display" style={{fontSize:19,fontWeight:700,marginTop:2}}>Paste from AI</div>
+              <div style={{fontSize:13,color:"var(--ink-soft)"}}>Drop in a plan from ChatGPT or anywhere else and I'll turn it into phases, routines and exercises you can edit.</div>
+            </Card>
+          </button>
+          <button onClick={doManual} className="block w-full text-left">
+            <Card className="p-5">
+              <div className="font-display" style={{fontSize:19,fontWeight:700}}>Build by hand</div>
+              <div style={{fontSize:13,color:"var(--ink-soft)"}}>Start empty and add phases, routines and exercises yourself.</div>
+            </Card>
+          </button>
+        </div>
+      )}
+
+      {mode==="paste" && (
+        <Card className="p-5 space-y-3">
+          <div style={{fontSize:13,color:"var(--ink-soft)"}}>Paste the full plan. Headings like “Phase 1”, “Session A”, and bullet exercises with reps or times all get picked up. You can fix anything afterwards.</div>
+          <textarea value={text} onChange={e=>{setText(e.target.value);setErr("");}} placeholder="Phase 1: Build the Habit (6 weeks)&#10;Session A&#10;- Goblet Squat 3x12&#10;- Wall sit 60 sec&#10;..." className="field" style={{minHeight:220,resize:"vertical",fontSize:14,lineHeight:1.5}}/>
+          {err && <div style={{fontSize:13,color:"var(--accent-deep)"}}>{err}</div>}
+          <div className="flex gap-2">
+            <Btn kind="solid" className="px-5 py-3 flex-1" style={{fontSize:14}} onClick={doParse}>Create plan</Btn>
+            <Btn kind="subtle" className="px-4 py-3" style={{fontSize:14}} onClick={()=>setMode(null)}>Back</Btn>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   ACTIVITY EDITOR (modal)
+===================================================================== */
+function ActivityEditor({activity,onSave,onClose,onDelete}){
+  const [a,setA]=useState({...activity});
+  function set(k,v){ setA(p=>({...p,[k]:v})); }
+  function applyLib(){ const ex=LIB.match(a.name); if(ex){ setA(p=>({...p, type:ex.type, howTo:ex.howTo, equipment:ex.equipment, muscles:ex.muscles, weightGuidance:ex.rec.weightGuidance||"", sets:p.sets||ex.rec.sets||null, reps:p.reps||ex.rec.reps||null, durationSec:p.durationSec||ex.rec.durationSec||null, perLeg: p.perLeg||ex.rec.perLeg||false, fromLibrary:true })); } }
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" style={{background:"rgba(16,42,69,.35)"}} onClick={onClose}>
+      <div className="glass w-full rounded-t-3xl p-5 pop" style={{maxWidth:480,maxHeight:"90vh",overflowY:"auto"}} onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="font-display" style={{fontSize:18,fontWeight:700}}>Exercise</div>
+          <button onClick={onClose}><IcX/></button>
+        </div>
+        <label style={{fontSize:12,color:"var(--ink-soft)"}}>Name</label>
+        <div className="flex gap-2 mb-3">
+          <input className="field" value={a.name} onChange={e=>set("name",e.target.value)} onBlur={applyLib}/>
+        </div>
+        <label style={{fontSize:12,color:"var(--ink-soft)"}}>Type</label>
+        <div className="flex gap-2 mb-3">
+          {["weight","reps","time","distance"].map(t=>(
+            <button key={t} onClick={()=>set("type",t)} className="flex-1 rounded-full py-2 capitalize" style={{fontSize:13,fontWeight:600, background:a.type===t?"linear-gradient(135deg,var(--teal),var(--teal-deep))":"rgba(255,255,255,.5)", color:a.type===t?"#fff":"var(--ink)"}}>{t}</button>
+          ))}
+        </div>
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <div><label style={{fontSize:12,color:"var(--ink-soft)"}}>Sets</label><input type="number" className="field" value={a.sets??""} onChange={e=>set("sets",e.target.value?+e.target.value:null)}/></div>
+          {a.type==="time" || a.type==="distance"
+            ? <div><label style={{fontSize:12,color:"var(--ink-soft)"}}>Duration (sec)</label><input type="number" className="field" value={a.durationSec??""} onChange={e=>set("durationSec",e.target.value?+e.target.value:null)}/></div>
+            : <div><label style={{fontSize:12,color:"var(--ink-soft)"}}>Reps</label><input type="number" className="field" value={a.reps??""} onChange={e=>set("reps",e.target.value?+e.target.value:null)}/></div>}
+          {a.type==="weight" && <div><label style={{fontSize:12,color:"var(--ink-soft)"}}>Weight ({a.weightUnit||"kg"})</label><input type="number" className="field" value={a.weight??""} onChange={e=>set("weight",e.target.value?+e.target.value:null)}/></div>}
+          {a.type==="distance" && <div><label style={{fontSize:12,color:"var(--ink-soft)"}}>Distance ({a.distanceUnit||"mi"})</label><input type="number" className="field" value={a.distance??""} onChange={e=>set("distance",e.target.value?+e.target.value:null)}/></div>}
+        </div>
+        <label className="flex items-center gap-2 mb-3" style={{fontSize:14}}>
+          <input type="checkbox" checked={!!a.perLeg} onChange={e=>set("perLeg",e.target.checked)} style={{width:18,height:18}}/> Per leg / per side
+        </label>
+        <label style={{fontSize:12,color:"var(--ink-soft)"}}>How to do it</label>
+        <textarea className="field mb-3" style={{minHeight:70,fontSize:14}} value={a.howTo||""} onChange={e=>set("howTo",e.target.value)} placeholder="Cue or technique notes"/>
+        <div className="grid grid-cols-1 gap-2 mb-4">
+          <div><label style={{fontSize:12,color:"var(--ink-soft)"}}>Equipment</label><input className="field" value={a.equipment||""} onChange={e=>set("equipment",e.target.value)}/></div>
+          <div><label style={{fontSize:12,color:"var(--ink-soft)"}}>Weight / effort guidance</label><input className="field" value={a.weightGuidance||""} onChange={e=>set("weightGuidance",e.target.value)}/></div>
+        </div>
+        <div className="flex gap-2">
+          <Btn kind="solid" className="px-5 py-3 flex-1" style={{fontSize:14}} onClick={()=>onSave(a)}>Save</Btn>
+          {onDelete && <Btn kind="ghost" className="px-4 py-3" style={{fontSize:14,color:"var(--accent-deep)"}} onClick={onDelete}><IcTrash color="var(--accent-deep)"/></Btn>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   PLAN DETAIL (view + edit)
+===================================================================== */
+function PlanDetail({plan,isNew,data,onCommit,onDiscard,go,startFlow}){
+  const [p,setP]=useState(()=>JSON.parse(JSON.stringify(plan)));
+  const [edit,setEdit]=useState(isNew);
+  const [openR,setOpenR]=useState({});
+  const [editingAct,setEditingAct]=useState(null); // {phaseId,routineId,actId|null}
+  const [showStats,setShowStats]=useState(false);
+  const planLogs=data.logs.filter(l=>l.planId===p.id);
+
+  function update(np){ setP(np); }
+  function save(){ onCommit(p); setEdit(false); }
+  function toggleR(id){ setOpenR(o=>({...o,[id]:!o[id]})); }
+
+  function addPhase(){ update({...p,phases:[...p.phases,{id:uid("ph"),name:`Phase ${p.phases.length+1}`,description:"",durationWeeks:null,startDate:null,endDate:null,routines:[],targets:[]}]}); }
+  function addRoutine(phId){ const phases=p.phases.map(ph=>ph.id===phId?{...ph,routines:[...ph.routines,{id:uid("rt"),name:"New routine",description:"",activities:[]}]}:ph); update({...p,phases}); }
+  function delPhase(phId){ update({...p,phases:p.phases.filter(ph=>ph.id!==phId)}); }
+  function delRoutine(phId,rId){ const phases=p.phases.map(ph=>ph.id===phId?{...ph,routines:ph.routines.filter(r=>r.id!==rId)}:ph); update({...p,phases}); }
+  function setPhase(phId,k,v){ update({...p,phases:p.phases.map(ph=>ph.id===phId?{...ph,[k]:v}:ph)}); }
+  function setRoutine(phId,rId,k,v){ update({...p,phases:p.phases.map(ph=>ph.id===phId?{...ph,routines:ph.routines.map(r=>r.id===rId?{...r,[k]:v}:r)}:ph)}); }
+  function saveAct(phId,rId,act){
+    update({...p,phases:p.phases.map(ph=>ph.id!==phId?ph:{...ph,routines:ph.routines.map(r=>{
+      if(r.id!==rId) return r;
+      const exists=r.activities.some(a=>a.id===act.id);
+      return {...r,activities: exists? r.activities.map(a=>a.id===act.id?act:a) : [...r.activities,act]};
+    })}) });
+    setEditingAct(null);
+  }
+  function delAct(phId,rId,actId){
+    update({...p,phases:p.phases.map(ph=>ph.id!==phId?ph:{...ph,routines:ph.routines.map(r=>r.id!==rId?r:{...r,activities:r.activities.filter(a=>a.id!==actId)})})});
+    setEditingAct(null);
+  }
+  function newActObj(){ return {id:uid("act"),name:"",type:"weight",sets:3,reps:10,durationSec:null,weight:null,weightUnit:"kg",perLeg:false,distance:null,distanceUnit:"mi",howTo:"",equipment:"",muscles:"",weightGuidance:"",fromLibrary:false}; }
+
+  const multiPhase=p.phases.length>1;
+
+  return (
+    <div className="space-y-4 pb-4">
+      <div className="flex items-center gap-2 pt-2">
+        <button onClick={()=>{ if(isNew){ onDiscard(); } else go({name:"plans"}); }}><IcBack/></button>
+        {edit
+          ? <input className="field font-display" style={{fontSize:18,fontWeight:700}} value={p.name} onChange={e=>update({...p,name:e.target.value})}/>
+          : <h1 className="font-display flex-1" style={{fontSize:22,fontWeight:700}}>{p.name}</h1>}
+        {!isNew && !edit && <button onClick={()=>setEdit(true)} className="ml-auto"><IcEdit/></button>}
+      </div>
+
+      {edit && <textarea className="field" style={{fontSize:14,minHeight:54}} placeholder="Plan description (optional)" value={p.description||""} onChange={e=>update({...p,description:e.target.value})}/>}
+      {!edit && p.description && <p style={{fontSize:14,color:"var(--ink-soft)"}}>{p.description}</p>}
+
+      {!edit && (
+        <div className="flex gap-2">
+          <Btn kind="solid" className="px-5 py-3 flex-1" style={{fontSize:14}} onClick={()=>startFlow(p.id)}><IcPlay/> Start workout</Btn>
+          <Btn kind="ghost" className="px-4 py-3" style={{fontSize:14}} onClick={()=>setShowStats(s=>!s)}><IcChart size={18}/> Stats</Btn>
+        </div>
+      )}
+
+      {showStats && !edit && <PlanStats plan={p} logs={planLogs}/>}
+
+      {p.phases.map((ph,phi)=>(
+        <div key={ph.id} className="space-y-3">
+          {(multiPhase||edit) && (
+            <Card className="p-4" style={{background:"linear-gradient(135deg,rgba(255,255,255,.6),rgba(255,255,255,.32))"}}>
+              <div className="flex items-center gap-2">
+                <div className="font-display flex items-center justify-center rounded-full" style={{width:30,height:30,fontSize:14,fontWeight:700,background:"linear-gradient(135deg,var(--teal),var(--teal-deep))",color:"#fff",flexShrink:0}}>{phi+1}</div>
+                {edit
+                  ? <input className="field" style={{fontSize:15,fontWeight:600}} value={ph.name} onChange={e=>setPhase(ph.id,"name",e.target.value)}/>
+                  : <div className="font-display" style={{fontSize:17,fontWeight:700}}>{ph.name}</div>}
+                {edit && <button onClick={()=>delPhase(ph.id)}><IcTrash color="var(--ink-soft)"/></button>}
+              </div>
+              {edit
+                ? <input className="field mt-2" style={{fontSize:13}} placeholder="When / duration (e.g. 6 weeks · June → July)" value={ph.description||""} onChange={e=>setPhase(ph.id,"description",e.target.value)}/>
+                : (ph.description && <div style={{fontSize:12,color:"var(--ink-soft)",marginTop:4,marginLeft:38}}>{ph.description}{ph.durationWeeks?` · ${ph.durationWeeks} weeks`:""}</div>)}
+              {ph.targets && ph.targets.length>0 && !edit && (
+                <div style={{marginLeft:38,marginTop:8}}>
+                  <Eyebrow>Targets</Eyebrow>
+                  {ph.targets.map(t=><div key={t.id} style={{fontSize:12,color:"var(--ink-soft)"}}>· {t.label}{t.durationSec?`: ${t.durationSec}s`:t.reps?`: ${t.reps}`:""}</div>)}
+                </div>
+              )}
+            </Card>
+          )}
+
+          {ph.routines.map(r=>{
+            const open=openR[r.id];
+            return (
+              <Card key={r.id} className="overflow-hidden">
+                <div className="p-4 flex items-center gap-3">
+                  <button className="flex-1 text-left" onClick={()=>toggleR(r.id)}>
+                    {edit
+                      ? <input className="field" style={{fontSize:15,fontWeight:600}} value={r.name} onClick={e=>e.stopPropagation()} onChange={e=>setRoutine(ph.id,r.id,"name",e.target.value)}/>
+                      : <>
+                          <div className="font-display" style={{fontSize:16,fontWeight:700}}>{r.name}</div>
+                          <div style={{fontSize:12,color:"var(--ink-soft)"}}>{r.activities.length} exercise{r.activities.length===1?"":"s"}{r.description?` · ${r.description.slice(0,40)}${r.description.length>40?"…":""}`:""}</div>
+                        </>}
+                  </button>
+                  {!edit && r.activities.length>0 && <button onClick={()=>startFlow(p.id,ph.id,r.id)} className="rounded-full flex items-center justify-center" style={{width:40,height:40,background:"linear-gradient(135deg,var(--accent),var(--accent-deep))",boxShadow:"0 6px 16px rgba(242,80,43,.35)",flexShrink:0}}><IcPlay/></button>}
+                  {edit && <button onClick={()=>delRoutine(ph.id,r.id)}><IcTrash color="var(--ink-soft)"/></button>}
+                  {!edit && <button onClick={()=>toggleR(r.id)} style={{transform:open?"rotate(90deg)":"none",transition:"transform .2s"}}><IcChevron color="var(--ink-soft)"/></button>}
+                </div>
+
+                {(open||edit) && (
+                  <div className="px-4 pb-4 space-y-2">
+                    {edit && <textarea className="field" style={{fontSize:13,minHeight:40}} placeholder="Routine notes (optional)" value={r.description||""} onChange={e=>setRoutine(ph.id,r.id,"description",e.target.value)}/>}
+                    {r.activities.map(a=><ActivityRow key={a.id} a={a} edit={edit} onEdit={()=>setEditingAct({phId:ph.id,rId:r.id,act:a})}/>)}
+                    {edit && <button onClick={()=>setEditingAct({phId:ph.id,rId:r.id,act:newActObj()})} className="w-full rounded-2xl py-3 flex items-center justify-center gap-2" style={{border:"1.5px dashed rgba(16,42,69,.25)",fontSize:14,color:"var(--ink-soft)",fontWeight:600}}><IcPlus size={16}/> Add exercise</button>}
+                  </div>
+                )}
+              </Card>
+            );
+          })}
+
+          {edit && <button onClick={()=>addRoutine(ph.id)} className="w-full rounded-2xl py-3 flex items-center justify-center gap-2 glass-soft" style={{fontSize:14,color:"var(--ink-soft)",fontWeight:600}}><IcPlus size={16}/> Add routine</button>}
+        </div>
+      ))}
+
+      {edit && (
+        <div className="space-y-2">
+          <button onClick={addPhase} className="w-full rounded-2xl py-3 flex items-center justify-center gap-2 glass-soft" style={{fontSize:14,color:"var(--ink-soft)",fontWeight:600}}><IcPlus size={16}/> Add phase</button>
+          <Btn kind="solid" className="w-full py-3.5" style={{fontSize:15}} onClick={save}>{isNew?"Save plan":"Done editing"}</Btn>
+          {!isNew && <button onClick={()=>{ if(confirm("Delete this whole plan?")){ onCommit(null,p.id);} }} className="w-full py-2" style={{fontSize:13,color:"var(--accent-deep)",fontWeight:600}}>Delete plan</button>}
+        </div>
+      )}
+
+      {editingAct && <ActivityEditor activity={editingAct.act}
+        onSave={(act)=>saveAct(editingAct.phId,editingAct.rId,act)}
+        onDelete={editingAct.act.name?()=>delAct(editingAct.phId,editingAct.rId,editingAct.act.id):null}
+        onClose={()=>setEditingAct(null)}/>}
+    </div>
+  );
+}
+
+function ActivityRow({a,edit,onEdit}){
+  const [open,setOpen]=useState(false);
+  return (
+    <div className="rounded-2xl p-3" style={{background:"rgba(255,255,255,.45)"}}>
+      <div className="flex items-center gap-2">
+        <button className="flex-1 text-left" onClick={()=>!edit&&setOpen(o=>!o)}>
+          <div style={{fontWeight:600,fontSize:15}}>{a.name||"Untitled"}</div>
+          <div style={{fontSize:13,color:"var(--teal-deep)",fontWeight:600}}>{recLine(a)}</div>
+        </button>
+        {edit
+          ? <button onClick={onEdit}><IcEdit/></button>
+          : (a.howTo||a.equipment||a.weightGuidance) && <button onClick={()=>setOpen(o=>!o)} style={{transform:open?"rotate(90deg)":"none",transition:"transform .2s"}}><IcChevron size={16} color="var(--ink-soft)"/></button>}
+      </div>
+      {open && !edit && (
+        <div className="mt-2 space-y-1" style={{fontSize:13,color:"var(--ink-soft)"}}>
+          {a.muscles && <div><b style={{color:"var(--ink)"}}>Works:</b> {a.muscles}</div>}
+          {a.equipment && <div><b style={{color:"var(--ink)"}}>Kit:</b> {a.equipment}</div>}
+          {a.weightGuidance && <div><b style={{color:"var(--ink)"}}>Load:</b> {a.weightGuidance}</div>}
+          {a.howTo && <div>{a.howTo}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlanStats({plan,logs}){
+  const total=logs.length;
+  const mins=Math.round(logs.reduce((s,l)=>s+(l.durationSec||0),0)/60);
+  const last=logs.sort((a,b)=>a.date<b.date?1:-1)[0];
+  const byRoutine={};
+  logs.forEach(l=>{ byRoutine[l.routineName]=(byRoutine[l.routineName]||0)+1; });
+  return (
+    <Card className="p-5 space-y-3">
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <div><div className="font-display" style={{fontSize:24,fontWeight:700}}>{total}</div><div style={{fontSize:11,color:"var(--ink-soft)"}}>workouts</div></div>
+        <div><div className="font-display" style={{fontSize:24,fontWeight:700}}>{mins}</div><div style={{fontSize:11,color:"var(--ink-soft)"}}>minutes</div></div>
+        <div><div className="font-display" style={{fontSize:16,fontWeight:700,marginTop:6}}>{last?fmtDate(last.date):"—"}</div><div style={{fontSize:11,color:"var(--ink-soft)"}}>last done</div></div>
+      </div>
+      {Object.keys(byRoutine).length>0 && (
+        <div><Eyebrow>By routine</Eyebrow>{Object.entries(byRoutine).map(([k,v])=><div key={k} className="flex justify-between" style={{fontSize:13}}><span>{k}</span><span style={{color:"var(--ink-soft)"}}>{v}×</span></div>)}</div>
+      )}
+    </Card>
+  );
+}
+
+/* =====================================================================
+   START FLOW — pick routine
+===================================================================== */
+function PickRoutine({data,flow,go,onPick}){
+  const plan=data.plans.find(p=>p.id===flow.planId)||data.plans[0];
+  const [planId,setPlanId]=useState(plan?plan.id:null);
+  const cur=data.plans.find(p=>p.id===planId);
+  if(!cur) return null;
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 pt-2">
+        <button onClick={()=>go({name:"home"})}><IcBack/></button>
+        <h1 className="font-display" style={{fontSize:22,fontWeight:700}}>Start a workout</h1>
+      </div>
+      {data.plans.length>1 && (
+        <select className="field" value={planId} onChange={e=>setPlanId(e.target.value)}>
+          {data.plans.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+      )}
+      {cur.phases.map((ph,phi)=>(
+        <div key={ph.id} className="space-y-2">
+          {cur.phases.length>1 && <Eyebrow>{`Phase ${phi+1} · ${ph.name}`}</Eyebrow>}
+          {ph.routines.filter(r=>r.activities.length).map(r=>(
+            <button key={r.id} className="block w-full text-left" onClick={()=>onPick(cur,ph,r)}>
+              <Card className="p-4 flex items-center justify-between">
+                <div>
+                  <div className="font-display" style={{fontSize:16,fontWeight:700}}>{r.name}</div>
+                  <div style={{fontSize:12,color:"var(--ink-soft)"}}>{r.activities.length} exercises · {recLine(r.activities[0])}…</div>
+                </div>
+                <div className="rounded-full flex items-center justify-center" style={{width:42,height:42,background:"linear-gradient(135deg,var(--accent),var(--accent-deep))",boxShadow:"0 6px 16px rgba(242,80,43,.35)"}}><IcPlay/></div>
+              </Card>
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* =====================================================================
+   RUNNER
+===================================================================== */
+function Runner({session,go,onFinish}){
+  const {plan,phase,routine}=session;
+  const [entries,setEntries]=useState(()=>routine.activities.map(a=>({
+    id:a.id, name:a.name, type:a.type, perLeg:a.perLeg, howTo:a.howTo, equipment:a.equipment, weightGuidance:a.weightGuidance, muscles:a.muscles,
+    rec:a, done:false,
+    sets:[ makeSet(a) ],
+  })));
+  const [openHow,setOpenHow]=useState({});
+  const startRef=useRef(Date.now());
+  const [elapsed,setElapsed]=useState(0);
+  useEffect(()=>{ const t=setInterval(()=>setElapsed(Math.round((Date.now()-startRef.current)/1000)),1000); return ()=>clearInterval(t); },[]);
+
+  function makeSet(a){ return { reps:a.reps||null, weight:a.weight||null, durationSec:(a.type==="time"||a.type==="distance")?(a.durationSec||null):null, distance:a.distance||null, done:false }; }
+  function updEntry(id,fn){ setEntries(es=>es.map(e=>e.id===id?fn(e):e)); }
+  function addSet(id){ updEntry(id,e=>({...e,sets:[...e.sets, {...e.sets[e.sets.length-1], done:false}]})); }
+  function setVal(id,si,k,v){ updEntry(id,e=>({...e,sets:e.sets.map((s,i)=>i===si?{...s,[k]:v}:s)})); }
+  function toggleSet(id,si){ updEntry(id,e=>({...e,sets:e.sets.map((s,i)=>i===si?{...s,done:!s.done}:s)})); }
+  function delSet(id,si){ updEntry(id,e=>({...e,sets:e.sets.filter((_,i)=>i!==si)})); }
+  function toggleDone(id){ updEntry(id,e=>({...e,done:!e.done})); }
+
+  const completed=entries.filter(e=>e.done||e.sets.some(s=>s.done)).length;
+
+  function finish(){
+    const clean=entries.map(e=>({ id:e.id,name:e.name,type:e.type,perLeg:e.perLeg, sets:e.sets.filter(s=>s.done||s.reps||s.weight||s.durationSec||s.distance) }))
+                       .filter(e=>e.sets.length);
+    const log={ id:uid("log"), date:todayISO(), startedAt:new Date(startRef.current).toISOString(), endedAt:new Date().toISOString(),
+      durationSec:Math.round((Date.now()-startRef.current)/1000),
+      planId:plan.id, planName:plan.name, phaseId:phase.id, phaseName:phase.name, routineId:routine.id, routineName:routine.name,
+      entries:clean };
+    onFinish(log);
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 overflow-y-auto no-scrollbar" style={{paddingBottom:120}}>
+      <div className="glass-nav sticky top-0 z-10 px-4 py-3 flex items-center gap-3" style={{borderBottom:"1px solid rgba(255,255,255,.5)"}}>
+        <button onClick={()=>{ if(confirm("Leave without saving this workout?")) go({name:"home"}); }}><IcX/></button>
+        <div className="flex-1">
+          <div className="font-display" style={{fontSize:16,fontWeight:700,lineHeight:1}}>{routine.name}</div>
+          <div style={{fontSize:12,color:"var(--ink-soft)"}}>{plan.name}</div>
+        </div>
+        <div className="font-display rounded-full px-3 py-1.5" style={{fontSize:15,fontWeight:700,background:"rgba(28,165,155,.16)",color:"var(--teal-deep)"}}>{fmtClock(elapsed)}</div>
+      </div>
+
+      <div className="px-4 pt-4 max-w-md mx-auto space-y-3">
+        <div style={{fontSize:12,color:"var(--ink-soft)"}}>{completed}/{entries.length} exercises touched</div>
+        {entries.map(e=>(
+          <Card key={e.id} className="p-4" style={{opacity:e.done?0.6:1}}>
+            <div className="flex items-start gap-2">
+              <button onClick={()=>toggleDone(e.id)} className="rounded-full flex items-center justify-center flex-shrink-0" style={{width:26,height:26,marginTop:2,border:e.done?"none":"2px solid rgba(16,42,69,.25)",background:e.done?"var(--good)":"transparent"}}>{e.done&&<IcCheck size={15} color="#fff"/>}</button>
+              <div className="flex-1">
+                <div className="flex items-center justify-between">
+                  <div className="font-display" style={{fontSize:16,fontWeight:700}}>{e.name}</div>
+                  {(e.howTo||e.equipment||e.weightGuidance)&&<button onClick={()=>setOpenHow(o=>({...o,[e.id]:!o[e.id]}))} style={{fontSize:12,color:"var(--teal-deep)",fontWeight:600}}>How?</button>}
+                </div>
+                <div style={{fontSize:12,color:"var(--ink-soft)"}}>Target: {recLine(e.rec)}</div>
+                {openHow[e.id] && (
+                  <div className="mt-2 rounded-xl p-3 space-y-1" style={{background:"rgba(255,255,255,.5)",fontSize:13,color:"var(--ink-soft)"}}>
+                    {e.equipment&&<div><b style={{color:"var(--ink)"}}>Kit:</b> {e.equipment}</div>}
+                    {e.weightGuidance&&<div><b style={{color:"var(--ink)"}}>Load:</b> {e.weightGuidance}</div>}
+                    {e.howTo&&<div>{e.howTo}</div>}
+                  </div>
+                )}
+
+                <div className="mt-3 space-y-2">
+                  {e.sets.map((s,si)=>(
+                    <div key={si} className="flex items-center gap-2">
+                      <span className="font-display" style={{fontSize:12,color:"var(--ink-soft)",width:18}}>{si+1}</span>
+                      {(e.type==="time")&&<Stopwatch seconds={s.durationSec||0} onChange={v=>setVal(e.id,si,"durationSec",v)}/>}
+                      {(e.type==="distance")&&<>
+                        <input type="number" className="field" style={{width:70,padding:"6px 8px"}} placeholder="min" value={s.durationSec?Math.round(s.durationSec/60):""} onChange={ev=>setVal(e.id,si,"durationSec",ev.target.value?+ev.target.value*60:null)}/>
+                        <span style={{fontSize:12,color:"var(--ink-soft)"}}>min</span>
+                        <input type="number" className="field" style={{width:64,padding:"6px 8px"}} placeholder="mi" value={s.distance||""} onChange={ev=>setVal(e.id,si,"distance",ev.target.value?+ev.target.value:null)}/>
+                      </>}
+                      {(e.type==="reps")&&<>
+                        <input type="number" className="field" style={{width:70,padding:"6px 8px"}} placeholder="reps" value={s.reps||""} onChange={ev=>setVal(e.id,si,"reps",ev.target.value?+ev.target.value:null)}/>
+                        <span style={{fontSize:12,color:"var(--ink-soft)"}}>reps{e.perLeg?"/leg":""}</span>
+                      </>}
+                      {(e.type==="weight")&&<>
+                        <input type="number" className="field" style={{width:62,padding:"6px 8px"}} placeholder="kg" value={s.weight||""} onChange={ev=>setVal(e.id,si,"weight",ev.target.value?+ev.target.value:null)}/>
+                        <span style={{fontSize:12,color:"var(--ink-soft)"}}>kg ×</span>
+                        <input type="number" className="field" style={{width:56,padding:"6px 8px"}} placeholder="reps" value={s.reps||""} onChange={ev=>setVal(e.id,si,"reps",ev.target.value?+ev.target.value:null)}/>
+                      </>}
+                      <button onClick={()=>toggleSet(e.id,si)} className="rounded-full flex items-center justify-center flex-shrink-0" style={{width:30,height:30,border:s.done?"none":"2px solid rgba(16,42,69,.2)",background:s.done?"var(--good)":"transparent"}}>{s.done&&<IcCheck size={14} color="#fff"/>}</button>
+                      {e.sets.length>1&&<button onClick={()=>delSet(e.id,si)} style={{flexShrink:0}}><IcX size={14} color="var(--ink-soft)"/></button>}
+                    </div>
+                  ))}
+                  <button onClick={()=>addSet(e.id)} style={{fontSize:13,color:"var(--teal-deep)",fontWeight:600}}>+ Add set</button>
+                </div>
+              </div>
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      <div className="fixed bottom-0 left-0 right-0 px-4 py-4" style={{background:"linear-gradient(to top, rgba(238,240,251,.95), rgba(238,240,251,0))"}}>
+        <div className="max-w-md mx-auto">
+          <Btn kind="solid" className="w-full py-4" style={{fontSize:16}} onClick={finish}><IcCheck color="#fff"/> Finish & save</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   STATS
+===================================================================== */
+function Stats({data}){
+  const [planId,setPlanId]=useState("all");
+  const logs=useMemo(()=> (planId==="all"?data.logs:data.logs.filter(l=>l.planId===planId)).slice().sort((a,b)=>a.date<b.date?1:-1),[data.logs,planId]);
+
+  const total=logs.length;
+  const mins=Math.round(logs.reduce((s,l)=>s+(l.durationSec||0),0)/60);
+  const vol=Math.round(logs.reduce((s,l)=>s+(l.entries||[]).reduce((t,e)=>t+entryVolume(e),0),0));
+  // favourite
+  const freq={}; logs.forEach(l=>(l.entries||[]).forEach(e=>{freq[e.name]=(freq[e.name]||0)+1;}));
+  const fav=Object.entries(freq).sort((a,b)=>b[1]-a[1])[0];
+
+  // weekly bars (last 9 weeks)
+  const weeks=[]; const now=new Date();
+  for(let i=8;i>=0;i--){ const d=new Date(now); d.setDate(d.getDate()-i*7); weeks.push(startOfWeek(d)); }
+  const counts={}; logs.forEach(l=>{ const k=weekKey(new Date(l.date)); counts[k]=(counts[k]||0)+1; });
+  const bars=weeks.map(w=>({label:w.toLocaleDateString(undefined,{day:"numeric",month:"short"}).split(" ")[0], value:counts[w.toISOString().slice(0,10)]||0 }));
+
+  // exercise progress
+  const exNames=Array.from(new Set(logs.flatMap(l=>(l.entries||[]).map(e=>e.name))));
+  const [exName,setExName]=useState("");
+  const sel = exName || exNames[0] || "";
+  const prog=[]; logs.slice().reverse().forEach(l=>{ (l.entries||[]).filter(e=>e.name===sel).forEach(e=>{ const b=bestOfEntry(e); const y=b.bw||b.bd||b.br||b.bdist||0; if(y) prog.push({y}); }); });
+  const selType = (()=>{ for(const l of logs){ const e=(l.entries||[]).find(x=>x.name===sel); if(e) return e.type; } return "reps"; })();
+  const unit = selType==="weight"?"kg":selType==="time"?"sec":selType==="distance"?"mi":"reps";
+
+  return (
+    <div className="space-y-4 pb-4">
+      <div className="flex items-center justify-between pt-2">
+        <h1 className="font-display" style={{fontSize:26,fontWeight:700}}>Progress</h1>
+        {data.plans.length>0 && (
+          <select className="field" style={{width:"auto",padding:"6px 10px",fontSize:13}} value={planId} onChange={e=>setPlanId(e.target.value)}>
+            <option value="all">All plans</option>
+            {data.plans.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        )}
+      </div>
+
+      {total===0 ? (
+        <Card className="p-6 text-center"><div style={{fontSize:15,color:"var(--ink-soft)"}}>Finish a workout and your stats and trends will build up here.</div></Card>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <Card className="p-4"><Eyebrow>Workouts</Eyebrow><div className="font-display" style={{fontSize:28,fontWeight:700}}>{total}</div></Card>
+            <Card className="p-4"><Eyebrow>Time</Eyebrow><div className="font-display" style={{fontSize:28,fontWeight:700}}>{mins}<span style={{fontSize:15}}> min</span></div></Card>
+            <Card className="p-4"><Eyebrow>Volume lifted</Eyebrow><div className="font-display" style={{fontSize:24,fontWeight:700}}>{vol.toLocaleString()}<span style={{fontSize:13}}> kg</span></div></Card>
+            <Card className="p-4"><Eyebrow>Most trained</Eyebrow><div className="font-display" style={{fontSize:16,fontWeight:700,marginTop:6}}>{fav?fav[0]:"—"}</div>{fav&&<div style={{fontSize:12,color:"var(--ink-soft)"}}>{fav[1]} sessions</div>}</Card>
+          </div>
+
+          <Card className="p-5">
+            <Eyebrow>Workouts per week</Eyebrow>
+            <div className="mt-2"><BarChart data={bars}/></div>
+          </Card>
+
+          <Card className="p-5">
+            <div className="flex items-center justify-between mb-1">
+              <Eyebrow>Exercise trend</Eyebrow>
+              <select className="field" style={{width:"auto",padding:"5px 8px",fontSize:12}} value={sel} onChange={e=>setExName(e.target.value)}>
+                {exNames.map(n=><option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            <div style={{fontSize:12,color:"var(--ink-soft)",marginBottom:6}}>Best {selType==="weight"?"weight":selType==="time"?"hold":selType==="distance"?"distance":"reps"} per session ({unit})</div>
+            <LineChart points={prog}/>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+   SETTINGS
+===================================================================== */
+function Settings({data,setData,go}){
+  const fileRef=useRef(null);
+  function exportData(){
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob); const a=document.createElement("a");
+    a.href=url; a.download=`summit-backup-${todayISO()}.json`; a.click(); URL.revokeObjectURL(url);
+  }
+  function importData(e){
+    const f=e.target.files[0]; if(!f) return; const r=new FileReader();
+    r.onload=()=>{ try{ const d=JSON.parse(r.result); if(d.plans&&d.logs){ setData(d); alert("Backup restored."); } else alert("That file doesn't look like a Summit backup."); }catch(_){ alert("Couldn't read that file."); } };
+    r.readAsText(f);
+  }
+  return (
+    <div className="space-y-4">
+      <h1 className="font-display pt-2" style={{fontSize:26,fontWeight:700}}>Settings</h1>
+      <Card className="p-5 space-y-3">
+        <Eyebrow>Your data</Eyebrow>
+        <div style={{fontSize:13,color:"var(--ink-soft)"}}>Everything is stored privately on this device. Back it up so you don't lose months of progress if you clear your browser or switch phones.</div>
+        <div className="flex gap-2">
+          <Btn kind="teal" className="px-5 py-3 flex-1" style={{fontSize:14}} onClick={exportData}>Export backup</Btn>
+          <Btn kind="ghost" className="px-5 py-3 flex-1" style={{fontSize:14}} onClick={()=>fileRef.current.click()}>Restore</Btn>
+          <input ref={fileRef} type="file" accept="application/json" onChange={importData} style={{display:"none"}}/>
+        </div>
+      </Card>
+      <Card className="p-5">
+        <Eyebrow>Install</Eyebrow>
+        <div style={{fontSize:13,color:"var(--ink-soft)",marginTop:4}}>Add Summit to your home screen from your browser's share menu for a full-screen, app-like experience at the gym.</div>
+      </Card>
+      <Card className="p-5">
+        <Eyebrow color="var(--accent-deep)">Danger zone</Eyebrow>
+        <button onClick={()=>{ if(confirm("Erase all plans and workout history? This can't be undone.")){ setData(blank); go({name:"home"}); } }} className="mt-2" style={{fontSize:14,color:"var(--accent-deep)",fontWeight:600}}>Reset everything</button>
+      </Card>
+      <div style={{textAlign:"center",fontSize:11,color:"var(--ink-soft)"}}>Summit · built for the slopes</div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   NAV
+===================================================================== */
+function Nav({view,go,onStart}){
+  const tab=view.name;
+  const item=(name,Icon,label)=>{
+    const active=tab===name;
+    return <button onClick={()=>go({name})} className="flex flex-col items-center gap-0.5" style={{width:56}}>
+      <Icon size={22} color={active?"var(--teal-deep)":"#8499ab"}/>
+      <span style={{fontSize:10,fontWeight:600,color:active?"var(--ink)":"#8499ab"}}>{label}</span>
+    </button>;
+  };
+  return (
+    <div className="fixed bottom-0 left-0 right-0 z-30 glass-nav" style={{paddingBottom:"env(safe-area-inset-bottom)"}}>
+      <div className="max-w-md mx-auto flex items-end justify-between px-6" style={{height:64}}>
+        {item("home",IcHome,"Home")}
+        {item("plans",IcStack,"Plans")}
+        <div style={{width:56}} className="flex justify-center">
+          <button onClick={onStart} className="rounded-full flex items-center justify-center pop" style={{width:64,height:64,marginBottom:18,background:"linear-gradient(135deg,var(--accent),var(--accent-deep))",boxShadow:"0 10px 26px rgba(242,80,43,.5), 0 0 0 6px rgba(255,255,255,.45)"}}>
+            <IcBolt/>
+          </button>
+        </div>
+        {item("stats",IcChart,"Progress")}
+        {item("settings",IcGear,"Settings")}
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================================
+   APP ROOT
+===================================================================== */
+function App(){
+  const [data,setData]=useState(()=>load());
+  const [view,setView]=useState({name:"home"});
+  const [newPlan,setNewPlan]=useState(null);   // {plan,isNew}
+  const [session,setSession]=useState(null);
+
+  useEffect(()=>{ persist(data); },[data]);
+
+  function go(v){ setNewPlan(null); setSession(null); setView(v); }
+
+  // plan create/commit
+  function onCreatePlan(plan){ setNewPlan({plan,isNew:true}); setView({name:"planDraft"}); }
+  function commitPlan(plan,deleteId){
+    if(deleteId){ setData(d=>({...d,plans:d.plans.filter(p=>p.id!==deleteId)})); setNewPlan(null); setView({name:"plans"}); return; }
+    setData(d=>{ const exists=d.plans.some(p=>p.id===plan.id); return {...d,plans: exists? d.plans.map(p=>p.id===plan.id?plan:p):[...d.plans,plan]}; });
+    setNewPlan(null); setView({name:"plan",planId:plan.id});
+  }
+
+  // start flow
+  function startFlow(planId,phaseId,routineId){
+    if(phaseId&&routineId){
+      const plan=data.plans.find(p=>p.id===planId); const phase=plan.phases.find(ph=>ph.id===phaseId); const routine=phase.routines.find(r=>r.id===routineId);
+      setSession({plan,phase,routine}); setView({name:"runner"}); return;
+    }
+    setView({name:"pick",planId});
+  }
+  function pickRoutine(plan,phase,routine){ setSession({plan,phase,routine}); setView({name:"runner"}); }
+  function finishWorkout(log){ setData(d=>({...d,logs:[...d.logs,log]})); setSession(null); setView({name:"stats"}); }
+
+  const showNav = !["runner","planDraft"].includes(view.name) && !(view.name==="plan"&&false);
+
+  let body=null;
+  if(view.name==="home") body=<Home data={data} go={go} startFlow={startFlow}/>;
+  else if(view.name==="plans") body=<Plans data={data} go={go}/>;
+  else if(view.name==="addPlan") body=<AddPlan go={go} onCreate={onCreatePlan}/>;
+  else if(view.name==="planDraft"&&newPlan) body=<PlanDetail plan={newPlan.plan} isNew={true} data={data} onCommit={commitPlan} onDiscard={()=>go({name:"plans"})} go={go} startFlow={startFlow}/>;
+  else if(view.name==="plan"){ const plan=data.plans.find(p=>p.id===view.planId); body= plan? <PlanDetail plan={plan} isNew={false} data={data} onCommit={commitPlan} onDiscard={()=>go({name:"plans"})} go={go} startFlow={startFlow}/> : <Plans data={data} go={go}/>; }
+  else if(view.name==="pick") body=<PickRoutine data={data} flow={view} go={go} onPick={pickRoutine}/>;
+  else if(view.name==="stats") body=<Stats data={data}/>;
+  else if(view.name==="settings") body=<Settings data={data} setData={setData} go={go}/>;
+
+  return (
+    <div className="min-h-screen">
+      {view.name==="runner"&&session
+        ? <Runner session={session} go={go} onFinish={finishWorkout}/>
+        : <div className="max-w-md mx-auto px-4" style={{paddingBottom: showNav?96:24}}>{body}</div>}
+      {showNav && view.name!=="runner" && <Nav view={view} go={go} onStart={()=> data.plans.length? setView({name:"pick",planId:(data.plans[0]&&data.plans[0].id)}) : go({name:"addPlan"})}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+
+<script>
+  if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js').catch(function(){}); }
+</script>
+</body>
+</html>
