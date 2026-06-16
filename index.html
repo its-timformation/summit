@@ -327,10 +327,34 @@ function AddPlan({go,onCreate}){
   const [mode,setMode]=useState(null);
   const [text,setText]=useState("");
   const [err,setErr]=useState("");
-  function doParse(){
+  const [loading,setLoading]=useState(false);
+  const [usedFallback,setUsedFallback]=useState(false);
+
+  async function doParse(){
     if(!text.trim()){ setErr("Paste some workout text first."); return; }
-    try{ const plan=window.parsePlanFromText(text); onCreate(plan,true); }
-    catch(e){ setErr("Couldn't read that. Try cleaning up the text a little."); }
+    setErr(""); setUsedFallback(false); setLoading(true);
+    try{
+      const resp = await fetch("/api/parse-plan", { method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({ text }) });
+      const data = await resp.json().catch(()=>null);
+      if(resp.ok && data && data.plan){
+        const plan = window.normalizeAIPlan(data.plan);
+        setLoading(false);
+        onCreate(plan,true);
+        return;
+      }
+      throw new Error((data && data.error) || "AI parsing failed.");
+    }catch(e){
+      // AI parsing didn't work (offline, server hiccup, no key configured yet) — fall back to the local parser so you're never stuck.
+      try{
+        const plan = window.parsePlanFromText(text);
+        setUsedFallback(true);
+        setLoading(false);
+        onCreate(plan,true);
+      }catch(e2){
+        setLoading(false);
+        setErr("Couldn't read that. Try cleaning up the text a little, or try again.");
+      }
+    }
   }
   function doManual(){
     const plan={ id:uid("plan"), name:"New plan", description:"", createdAt:new Date().toISOString(), startDate:todayISO(),
@@ -350,7 +374,7 @@ function AddPlan({go,onCreate}){
             <Card className="p-5">
               <Eyebrow color="var(--accent-deep)">Recommended</Eyebrow>
               <div className="font-display" style={{fontSize:19,fontWeight:700,marginTop:2}}>Paste from AI</div>
-              <div style={{fontSize:13,color:"var(--ink-soft)"}}>Drop in a plan from ChatGPT or anywhere else and I'll turn it into phases, routines and exercises you can edit.</div>
+              <div style={{fontSize:13,color:"var(--ink-soft)"}}>Drop in a plan from ChatGPT or anywhere else — Claude reads it and builds phases, routines and exercises, complete with how-tos and recommendations.</div>
             </Card>
           </button>
           <button onClick={doManual} className="block w-full text-left">
@@ -364,11 +388,12 @@ function AddPlan({go,onCreate}){
 
       {mode==="paste" && (
         <Card className="p-5 space-y-3">
-          <div style={{fontSize:13,color:"var(--ink-soft)"}}>Paste the full plan. Headings like “Phase 1”, “Session A”, and bullet exercises with reps or times all get picked up. You can fix anything afterwards.</div>
-          <textarea value={text} onChange={e=>{setText(e.target.value);setErr("");}} placeholder="Phase 1: Build the Habit (6 weeks)&#10;Session A&#10;- Goblet Squat 3x12&#10;- Wall sit 60 sec&#10;..." className="field" style={{minHeight:220,resize:"vertical",fontSize:14,lineHeight:1.5}}/>
+          <div style={{fontSize:13,color:"var(--ink-soft)"}}>Paste the full plan. Claude will read it and structure it into phases, routines and exercises with recommendations and technique notes — you can fix anything afterwards.</div>
+          <textarea value={text} onChange={e=>{setText(e.target.value);setErr("");}} placeholder="Phase 1: Build the Habit (6 weeks)&#10;Session A&#10;- Goblet Squat 3x12&#10;- Wall sit 60 sec&#10;..." className="field" style={{minHeight:220,resize:"vertical",fontSize:14,lineHeight:1.5}} disabled={loading}/>
           {err && <div style={{fontSize:13,color:"var(--accent-deep)"}}>{err}</div>}
+          {usedFallback && <div style={{fontSize:12,color:"var(--ink-soft)"}}>Used quick local parsing because the AI parser couldn't be reached — double-check the result.</div>}
           <div className="flex gap-2">
-            <Btn kind="solid" className="px-5 py-3 flex-1" style={{fontSize:14}} onClick={doParse}>Create plan</Btn>
+            <Btn kind="solid" className="px-5 py-3 flex-1" style={{fontSize:14, opacity: loading?0.7:1}} onClick={loading?undefined:doParse}>{loading?"Reading your plan…":"Create plan"}</Btn>
             <Btn kind="subtle" className="px-4 py-3" style={{fontSize:14}} onClick={()=>setMode(null)}>Back</Btn>
           </div>
         </Card>
@@ -874,11 +899,11 @@ function Nav({view,go,onStart}){
   };
   return (
     <div className="fixed bottom-0 left-0 right-0 z-30 glass-nav" style={{paddingBottom:"env(safe-area-inset-bottom)"}}>
-      <div className="max-w-md mx-auto flex items-end justify-between px-6" style={{height:64}}>
+      <div className="max-w-md mx-auto flex items-center justify-between px-6" style={{height:64}}>
         {item("home",IcHome,"Home")}
         {item("plans",IcStack,"Plans")}
-        <div style={{width:56}} className="flex justify-center">
-          <button onClick={onStart} className="rounded-full flex items-center justify-center pop" style={{width:64,height:64,marginBottom:18,background:"linear-gradient(135deg,var(--accent),var(--accent-deep))",boxShadow:"0 10px 26px rgba(242,80,43,.5), 0 0 0 6px rgba(255,255,255,.45)"}}>
+        <div style={{width:56,height:64}} className="relative flex items-center justify-center">
+          <button onClick={onStart} className="rounded-full flex items-center justify-center pop absolute" style={{width:64,height:64,top:-22,background:"linear-gradient(135deg,var(--accent),var(--accent-deep))",boxShadow:"0 10px 26px rgba(242,80,43,.5), 0 0 0 6px rgba(255,255,255,.45)"}}>
             <IcBolt/>
           </button>
         </div>

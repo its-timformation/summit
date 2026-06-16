@@ -243,3 +243,63 @@ window.parsePlanFromText = (function () {
 
   return parse;
 })();
+
+// window.normalizeAIPlan — takes the raw JSON returned by the /api/parse-plan
+// Cloudflare Function (no ids yet) and turns it into the exact shape the app
+// expects, generating ids and filling any still-missing fields from the
+// local exercise library as a final safety net.
+window.normalizeAIPlan = (function () {
+  const LIB = window.EXERCISE_LIBRARY;
+  let idc = 0;
+  const uid = (p) => `ai_${p}_${Date.now().toString(36)}_${(idc++).toString(36)}`;
+
+  function activity(raw) {
+    const libEx = LIB.match(raw.name || "");
+    const type = raw.type || (libEx ? libEx.type : "reps");
+    return {
+      id: uid("act"),
+      name: raw.name || "Exercise",
+      type,
+      sets: Number.isFinite(raw.sets) ? raw.sets : (libEx && libEx.rec.sets) || (type === "weight" ? 3 : null),
+      reps: Number.isFinite(raw.reps) ? raw.reps : (libEx && libEx.rec.reps) || (type === "weight" || type === "reps" ? 10 : null),
+      durationSec: Number.isFinite(raw.durationSec) ? raw.durationSec : (libEx && libEx.rec.durationSec) || (type === "time" ? 60 : null),
+      weight: Number.isFinite(raw.weight) ? raw.weight : null,
+      weightUnit: raw.weightUnit === "lb" ? "lb" : "kg",
+      perLeg: !!raw.perLeg,
+      distance: Number.isFinite(raw.distance) ? raw.distance : null,
+      distanceUnit: raw.distanceUnit === "km" ? "km" : "mi",
+      howTo: raw.howTo || (libEx ? libEx.howTo : ""),
+      equipment: raw.equipment || (libEx ? libEx.equipment : ""),
+      muscles: raw.muscles || (libEx ? libEx.muscles : ""),
+      weightGuidance: raw.weightGuidance || (libEx ? libEx.rec.weightGuidance || "" : ""),
+      fromLibrary: !!libEx,
+    };
+  }
+  function routine(raw) {
+    return { id: uid("rt"), name: raw.name || "Workout", description: raw.description || "", activities: (raw.activities || []).map(activity) };
+  }
+  function phase(raw) {
+    return {
+      id: uid("ph"),
+      name: raw.name || "Main",
+      description: raw.description || "",
+      durationWeeks: Number.isFinite(raw.durationWeeks) ? raw.durationWeeks : null,
+      startDate: null,
+      endDate: null,
+      routines: (raw.routines || []).map(routine),
+      targets: (raw.targets || []).map((t) => ({ id: uid("tg"), label: t.label || "", durationSec: Number.isFinite(t.durationSec) ? t.durationSec : null, reps: Number.isFinite(t.reps) ? t.reps : null, raw: t.label || "" })),
+    };
+  }
+  return function normalizeAIPlan(raw) {
+    const plan = {
+      id: uid("plan"),
+      name: (raw && raw.name) || "Imported Plan",
+      description: (raw && raw.description) || "",
+      createdAt: new Date().toISOString(),
+      startDate: new Date().toISOString().slice(0, 10),
+      phases: ((raw && raw.phases) || []).map(phase),
+    };
+    if (!plan.phases.length) plan.phases.push(phase({ name: "Main", routines: [] }));
+    return plan;
+  };
+})();
