@@ -76,6 +76,7 @@
 const { useState, useEffect, useRef, useMemo } = React;
 const LIB = window.EXERCISE_LIBRARY;
 const STORE = "fittrack-v1";
+const APP_VERSION = "1.1.0"; // bump this with every deployed change — shown in Settings
 
 /* ---------------- storage ---------------- */
 const blank = { plans: [], logs: [] };
@@ -863,6 +864,13 @@ function Settings({data,setData,go}){
   return (
     <div className="space-y-4">
       <h1 className="font-display pt-2" style={{fontSize:26,fontWeight:700}}>Settings</h1>
+      <Card className="p-5 flex items-center justify-between">
+        <div>
+          <Eyebrow>Summit</Eyebrow>
+          <div className="font-display" style={{fontSize:15,fontWeight:700,marginTop:2}}>Version {APP_VERSION}</div>
+        </div>
+        <Pill bg="rgba(28,165,155,.16)" fg="var(--teal-deep)">Up to date</Pill>
+      </Card>
       <Card className="p-5 space-y-3">
         <Eyebrow>Your data</Eyebrow>
         <div style={{fontSize:13,color:"var(--ink-soft)"}}>Everything is stored privately on this device. Back it up so you don't lose months of progress if you clear your browser or switch phones.</div>
@@ -880,7 +888,7 @@ function Settings({data,setData,go}){
         <Eyebrow color="var(--accent-deep)">Danger zone</Eyebrow>
         <button onClick={()=>{ if(confirm("Erase all plans and workout history? This can't be undone.")){ setData(blank); go({name:"home"}); } }} className="mt-2" style={{fontSize:14,color:"var(--accent-deep)",fontWeight:600}}>Reset everything</button>
       </Card>
-      <div style={{textAlign:"center",fontSize:11,color:"var(--ink-soft)"}}>Summit · built for the slopes</div>
+      <div style={{textAlign:"center",fontSize:11,color:"var(--ink-soft)"}}>Summit v{APP_VERSION} · built for the slopes</div>
     </div>
   );
 }
